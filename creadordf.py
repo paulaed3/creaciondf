@@ -1,35 +1,63 @@
 import pandas as pd
 import re
-import sys
+from pathlib import Path
+
+# ================= Utilidades ================= #
+
 
 def normalizar_id(id_str):
-    """Normaliza el ID eliminando puntos y decimales."""
     if pd.isna(id_str):
         return pd.NA
-    return re.sub(r'\D', '', str(id_str))
+    solo = re.sub(r'\D', '', str(id_str))
+    return solo if solo else pd.NA
 
-def calcular_tipo_nps(satisfaccion):
-    """Calcula el tipo NPS según la satisfacción general."""
+
+def calcular_tipo_nps(valor):
     try:
-        val = int(satisfaccion)
+        v = int(valor)
     except (ValueError, TypeError):
         return pd.NA
-    if val >= 9:
+    if v >= 9:
         return "Entusiastas"
-    elif val >= 7:
+    if v >= 7:
         return "Pasivos"
-    elif val >= 0:
+    if v >= 0:
         return "Detractores"
     return pd.NA
 
-def similitud_tokens(a, b):
-    """Compara similitud de tokens entre dos strings."""
-    tokens_a = set(re.findall(r'\w+', str(a).lower()))
-    tokens_b = set(re.findall(r'\w+', str(b).lower()))
-    return len(tokens_a & tokens_b) / max(len(tokens_a | tokens_b), 1)
 
-# Lista de columnas modelo
-modelo_columnas = [
+def map_generacion(anio_str: str):
+    if pd.isna(anio_str):
+        return pd.NA
+    txt = str(anio_str).lower()
+    if '1965' in txt or '1981' in txt or '196' in txt and '198' in txt:
+        return 'Generación X'
+    if '1982' in txt or '1994' in txt or '198' in txt and '199' in txt:
+        return 'Millenials'
+    if '1995' in txt or 'después' in txt or 'despues' in txt or '199' in txt and '200' in txt:
+        return 'Centenialls'
+    if '195' in txt or 'antes' in txt:
+        return 'Baby Boomers'
+    return pd.NA
+
+
+def limpiar_area(area: str):
+    if pd.isna(area):
+        return pd.NA
+    a = str(area).strip().upper()
+    # Eliminar prefijos comunes
+    a = re.sub(r'^SECRETAR[ÍI]A\s+DE\s+', '', a)
+    a = re.sub(r'^SECRETAR[ÍI]A\s+', '', a)
+    a = a.replace('  ', ' ').strip()
+    return a
+
+
+def safe_get(row, col):
+    return row.get(col) if col in row and pd.notna(row.get(col)) else pd.NA
+
+
+# ================= Definición columnas destino ================= #
+OUTPUT_COLUMNS = [
     'Unnamed: 0', 'ID', 'FECHA', 'ESTATUS', 'RESULTADO SATISFACCION', 'SATISFACCION GENERAL', 'SATISFACCION COVID',
     'SATISFACCION CONDICIONES', 'COMENTARIOS', 'BENEFICIOS', 'BENEFICIO 1', 'BENEFICIO 1 INTERES', 'BENEFICIO 1 USO',
     'BENEFICIO 2', 'BENEFICIO 1 INTERES.1', 'BENEFICIO 1 USO.1', 'BENEFICIO 3', 'BENEFICIO 1 INTERES.2', 'BENEFICIO 1 USO.2',
@@ -71,69 +99,208 @@ modelo_columnas = [
     'Generación', 'Tipo NPS', 'EMPRESA'
 ]
 
-# Cargar archivos
-sabana = pd.read_excel("1. Sabana Original AFunza 2023.xlsx")
-status = pd.read_excel("Alcaldía de Funza - Status Med Clima.xlsx")
+# ================= Mapeo de columnas origen -> destino ================= #
+MAPPING_DIRECTO = {
+    # Identificación y estado
+    'IDs / TAN del participante': 'ID',
+    'Fecha y hora': 'FECHA',
+    'Estado de la participación': 'ESTATUS',
+    # Satisfacción
+    # usaremos búsqueda por prefijo
+    '1. En una escala de 1 a 10': 'SATISFACCION GENERAL',
+    '2. En una escala de 1 a 10': 'SATISFACCION CONDICIONES',
+    '3. ¿Quiere hacer algún comentario': 'COMENTARIOS',
+    # Clima (bloque 4)
+    'Me siento orgulloso(a)': 'NIVEL DE ORGULLO',
+    'Recomendaría a otros trabajar': 'NIVEL DE RECOMENDACIÓN',
+    'Me parece inspiradora la misión': 'PERCEPCION MISION INSPIRADORA',
+    'Comprendo los objetivos de la entidad': 'APORTE A OBJETIVOS ORGANIZACIONALES',
+    'Se reciben beneficios no monetarios': 'BENEFICIOS NO MONETARIOS',
+    'Se realizan actividades de bienestar': 'ACTIVIDADES BIENESTAR',
+    'Las características de mi trabajo me permiten': 'BALANCE TRABAJO VIDA PERSONAL',
+    'La entidad demuestra sensibilidad': 'SENSIBILIDAD POR LA VIDA PERSONAL',
+    # Clima (bloque 5)
+    'Cuento con los recursos mínimos': 'RECURSOS REQUERIDOS',
+    'Puedo acceder a toda la información': 'ACCESO A INFORMACION',
+    'Siento que mi cargo me brinda la oportunidad': 'SENSACION DE PROGRESO EN EL CARGO',
+    'La formación que brinda la entidad': 'ENTRENAMIENTO PUESTO TRABAJO',
+    'El entrenamiento que recibo en mi cargo': 'FORMACION PARA DESARROLLO PERSONAL Y LABORAL',
+    'Me evalúan por mi desempeño': 'EVALUACION DESEMPEÑO',
+    'En esta entidad celebramos los éxitos': 'CELEBRACION DE EXITOS',
+    'Todos en la entidad tienen claro su cargo': 'CLARIDAD DE CARGOS Y RESPONSABILIDADES',
+    # Clima (bloque 6)
+    'La comunicación entre áreas': 'COMUNICACION INTERAREAS',
+    'Mi jefe se comunica de forma clara': 'COMUNICACION CON LIDER',
+    'Conozco personas de diferentes áreas': 'TRABAJO INTERAREAS',
+    'En mi área se facilita y promueve': 'TRABAJO DENTRO DEL AREA',
+    'En la entidad las decisiones se toman': 'OPORTUNIDAD EN DECISIONES',
+    'Las decisiones que se toman en la entidad': 'ANALISIS DE DECISIONES',
+    'Los líderes en la entidad inspiran': 'LIDERES EJEMPLO',
+    'Los jefes forman a sus colaboradores': 'LIDERES MENTORES',
+    # Clima (bloque 7)
+    'Los jefes y directivos son cordiales': 'RESPETO EN EL TRATO',
+    'Puedo dar mi punto de vista y sugerencias': 'DAR PUNTO DE VISTA',
+    'Siento que las relaciones en esta entidad': 'RELACIONES DE CONFIANZA',
+    'Puedo determinar formas propias': 'AUTONOMIA DEL CARGO',
+    'En esta entidad el trato es justo': 'TRATO JUSTO Y EQUITATIVO',
+    'En esta entidad se evita que se utilice la intimidación': 'EVITAR INTIMIDACION Y HOSTIGAMIENTO',
+    'Yo quiero a la entidad y me siento comprometido': 'AMOR Y COMPROMISO POR LA ORGANIZACIÓN',
+    'Me gusta mi trabajo y siento que estoy': 'GUSTO POR EL TRABAJO',
+    # Clima (bloque 8)
+    'Puedo desempeñar mi trabajo de forma segura': 'CONDICIONES SEGURAS Y COMODAS',
+    'Puedo manejar el estrés que se genera': 'MANEJO DEL ESTRÉS',
+    'Los procesos de la entidad cuentan con controles': 'CONTROLES DE CALIDAD',
+    'Se revisa de forma constante la calidad': 'MEJORA CONTINUA',
+    'Se nota una sensibilidad en la entidad por cuidar el impacto': 'CUIDADO DEL MEDIO AMBIENTE',
+    'La entidad implementa políticas y/o procedimientos': 'POLITICAS AMBIENTALES',
+    'La entidad contrata empleados y proveedores': 'CONTRATACION Y PAGO OPORTUNO',
+    'La entidad cuida el impacto que puede tener en la comunidad': 'IMPACTO Y APORTE A LA COMUNIDAD',
+    # Demográficos
+    '9. Género': 'GENERO',
+    '10. Estado civil': 'ESTADO CIVIL',
+    '11. Año de nacimiento': 'AÑO NACIMIENTO',
+    '11. Año de nacimiento.': 'AÑO NACIMIENTO',
+    '12. Nivel de estudios': 'NIVEL ESTUDIOS',
+    '13. Tipo de vivienda donde habita': 'TIPO VIVIENDA',
+    '27. Antigüedad en la entidad': 'ANTIGÜEDAD',
+    '28. Tipo de vinculación': 'TIPO CONTRATO',
+    '26. Modalidad de trabajo': 'MODALIDAD DE TRABAJO',
+    '30. Área en la que labora': 'VARIABLE 1',
+    # Hogar y aportes
+    '14. ¿Cuántos hijos / hijas tiene?': 'NUMERO HIJOS',
+    '15. Indique el rango de edad de su primer hijo/a': 'EDAD PRIMER HIJO',
+    '16. Indique el rango de edad de su segundo hijo/a': 'EDAD SEGUNDO HIJO',
+    '17. Indique el rango de edad de su tercer hijo/a': 'EDAD TERCER HIJO',
+    '18. Indique el rango de edad de su cuarto hijo/a': 'EDAD CUARTO HIJO',
+    '19. Indique el rango de edad de su quinto hijo/a': 'EDAD QUINTO HIJO',
+    'Sólo yo aporto al hogar': 'APORTE SOLO YO',
+    'Esposo(a)/Pareja': 'APORTE ESPOSO',
+    'Hijos(as)': 'APORTE HIJOS',
+    'Padres': 'APORTE PADRES',
+    'Hermanos(as)': 'APORTE HERMANOS',
+    'Otros': 'APORTE OTROS',
+    # Ingresos / financiación
+    '21. ¿En su hogar se ha dado una disminución': 'REDUCCION INGRESOS',
+    '22. Si usted tuviera una necesidad de financiación': 'MEDIOS FINANCIACION',
+    # Formación interés
+    'Formación técnica/tecnológica': 'FORMACION TECNICA',
+    'Formación profesional (pregrado/ posgrado)': 'FORMACION PROFESIONAL',
+    'Idiomas': 'FORMACION IDIOMAS',
+    'Habilidades básicas (Excel, power point, computación)': 'FORMACION HABILIDADES BASICAs',
+    'Desarrollo personal': 'FORMACION DESARROLLO PERSONAL',
+    'Formación artística': 'FORMACION ARTISTICA',
+    'Formación para emprendedores': 'FORMACION EMPRENDEDORES',
+    # Salud mental - Depresión
+    '24. La DEPRESIÓN es': 'DEPRESIÓN',
+    'Depresión Usted?': 'DEPRESION USTED',
+    'Depresión Algún familiar cercano?': 'DEPRESION FAMILIAR',
+    'Depresión Algún amigo cercano?': 'DEPRESION AMIGO',
+    # Salud mental - Ansiedad
+    '25. Los trastornos de ANSIEDAD': 'ANSIEDAD',
+    'Ansiedad Usted?': 'ANSIEDAD USTED',
+    'Ansiedad Algún familiar cercano?': 'ANSIEDAD FAMILIAR',
+    'Ansiedad Algún amigo cercano?': 'ANSIEDAD AMIGO',
+    # Colsubsidio
+    '31. ¿Es afiliado a Colsubsidio?': 'AFILIADO COLSUBSIDIO',
+    '32. ¿Cuenta usted la Tarjeta Multiservicios': 'TMS',
+    '33. Como afiliado a Colsubsidio': 'SERVICIOS CAJA',
+    'Piscilago': 'PISCILAGO',
+    'Hoteles Colsubsidio': 'COLSUBSIDIO',
+    'Catering y restaurantes': 'CATERING Y RESTAURANTES',
+    'Clubes deportivos Colsubsidio (Deportes, Gimnasios, zonas húmedas)': 'GIMNASIOS Y ZONAS HÚMEDAS',
+    'Agencia de Viajes': 'VIAJES',
+    'Recreación para niños': 'RECREACION',
+    'Torneos y competencias para adultos': 'TORNEOS Y COMPETENCIAS PARA ADULTOS',
+    'Actividades recreodeportivas para adultos mayores': 'ACTIVIDADES RECREODEPORTIVAS PARA ADULTOS MAYORES',
+    'Teatro': 'TEATRO',
+    'Supermercados': 'SUPERMERCADOS',
+    'Droguerías': 'DROGUERÍAS',
+    'Créditos y seguros': 'CRÉDITOS Y SEGUROS',
+    'Biblioteca virtual': 'BIBLIOTECA VIRTUAL',
+    'Bachillerato por ciclos': 'BACHILLERATO POR CICLOS',
+    'Programas de formación técnica y tecnológica': 'PROGRAMAS FORMACION TECNICA',
+    'Proyectos de vivienda': 'PROYECTOS DE VIVIENDA',
+    'Servicios odontológicos': 'SERVICIOS ODONTOLÓGICOS',
+    'Chequeos médicos': 'CHEQUEOS MÉDICOS',
+    'Plan complementario de salud': 'PLAN COMPLEMENTARIO',
+    'Cirugía estética': 'CIRUGÍA ESTÉTICA',
+    # Compras / crédito
+    '34. ¿Hace compras en algunos de estos establecimientos?:': 'COMPRA EN',
+    'Supermercados Colsubsidio': 'COMPRA EN SUPERMECADOS',
+    'Droguerías Colsubsidio': 'COMPRA DROGUERÍAS',
+    '35. ¿Alguna vez ha sido beneficiario del subsidio de vivienda': 'SUBSIDIO VIVIENDA',
+    '36. Como afiliado a Colsubsidio usted puede tener un cupo de crédito': 'CUPO CREDITO',
+}
+
+# ================= Carga de datos ================= #
+INPUT1 = 'input1.xlsx'
+INPUT2 = 'input2.xlsx'
+OUTPUT = 'output.xlsx'
+
+if not Path(INPUT1).exists():
+    raise FileNotFoundError(f"No se encuentra {INPUT1}")
+if not Path(INPUT2).exists():
+    raise FileNotFoundError(f"No se encuentra {INPUT2}")
+
+df_in = pd.read_excel(INPUT1)
+df_map = pd.read_excel(INPUT2)
 
 # Filtrar participación completa
-sabana_filtrada = sabana[sabana["Estado de la participación"] == "Participación completa"].copy()
+df_in = df_in[df_in.get('Estado de la participación') ==
+              'Participación completa'].copy()
 
-# Validación de columna IDs / TAN del participante
-if "IDs / TAN del participante" not in sabana_filtrada.columns:
-    print("ERROR: La columna 'IDs / TAN del participante' no existe en el archivo de la sabana.")
-    print("Columnas encontradas:", sabana_filtrada.columns.tolist())
-    sys.exit(1)
+# Normalizar ID
+df_in['ID'] = df_in.get('IDs / TAN del participante').apply(normalizar_id)
 
-# Normalizar IDs
-sabana_filtrada["ID"] = sabana_filtrada["IDs / TAN del participante"].apply(normalizar_id)
-status["ID"] = status["ID"].apply(normalizar_id)
+# Construir diccionario area -> variable3 (solo filas donde VARIABLE 3 no es nan)
+area_to_v3 = {}
+for _, r in df_map.iterrows():
+    area_raw = str(r.get('Unnamed: 1', '')).strip()
+    v3 = str(r.get('VARIABLE 3', '')).strip()
+    if area_raw and area_raw.upper() != 'VARIABLE 1' and v3 and v3.lower() != 'nan':
+        area_to_v3[limpiar_area(area_raw)] = v3.upper()
 
-# Mapear columnas por nombre exacto o similitud
-def mapear_columnas(sabana_cols, modelo_cols):
-    mapping = {}
-    for modelo_col in modelo_cols:
-        if modelo_col in sabana_cols:
-            mapping[modelo_col] = modelo_col
+# Preprocesar: crear columnas destino base
+salida_rows = []
+for idx, row in df_in.iterrows():
+    out = {col: pd.NA for col in OUTPUT_COLUMNS}
+    out['Unnamed: 0'] = str(len(salida_rows))
+    for col_src, col_dst in MAPPING_DIRECTO.items():
+        # búsqueda flexible por prefijo para preguntas largas
+        match_val = None
+        if col_src in row.index:
+            match_val = row[col_src]
         else:
-            similitudes = [(col, similitud_tokens(col, modelo_col)) for col in sabana_cols]
-            similitudes.sort(key=lambda x: x[1], reverse=True)
-            mejor = similitudes[0]
-            if mejor[1] > 0.5:
-                mapping[modelo_col] = mejor[0]
-            else:
-                mapping[modelo_col] = None
-    return mapping
+            # buscar primer encabezado que empiece por el patrón y no se haya tomado
+            for candidate in row.index:
+                if candidate.startswith(col_src):
+                    match_val = row[candidate]
+                    break
+        if match_val is not None:
+            out[col_dst] = match_val if pd.notna(match_val) else pd.NA
 
-mapping = mapear_columnas(sabana_filtrada.columns, modelo_columnas)
+    # Derivados
+    out['SATISFACCION COVID'] = pd.NA  # No presente en input
+    out['RESULTADO SATISFACCION'] = pd.NA  # Placeholder (regla no definida)
+    out['VARIABLE 2'] = str(out.get('TIPO CONTRATO')
+                            or '').strip().upper() or pd.NA
+    area_clean = limpiar_area(out.get('VARIABLE 1')) if out.get(
+        'VARIABLE 1') is not pd.NA else pd.NA
+    out['VARIABLE 1'] = area_clean
+    out['VARIABLE 3'] = area_to_v3.get(
+        area_clean, row.get('VARIABLE 3', pd.NA))
+    out['Generación'] = map_generacion(out.get('AÑO NACIMIENTO'))
+    out['Tipo NPS'] = calcular_tipo_nps(out.get('SATISFACCION GENERAL'))
+    out['EMPRESA'] = 'ALCALDIA FUNZA'
 
-# Construir DataFrame final
-df_final = pd.DataFrame(columns=modelo_columnas)
-for idx, row in sabana_filtrada.iterrows():
-    new_row = {}
-    for modelo_col in modelo_columnas:
-        sabana_col = mapping.get(modelo_col)
-        if sabana_col and sabana_col in row:
-            new_row[modelo_col] = row[sabana_col]
-        else:
-            new_row[modelo_col] = pd.NA
-    df_final = df_final.append(new_row, ignore_index=True)
+    # SATISAFACCION MODALIDAD DE TRABAJO (no en input claro -> NA)
+    out['SATISAFACCION MODALIDAD DE TRABAJO'] = pd.NA
 
-# Sobrescribir variables oficiales desde Status
-variables_oficiales = ["VARIABLE 1", "VARIABLE 2", "VARIABLE 3", "CARGO", "AREA", "Estado"]
-df_final = df_final.merge(
-    status[["ID"] + variables_oficiales],
-    on="ID", how="left", suffixes=('', '_status')
-)
-for var in variables_oficiales:
-    df_final[var] = df_final[f"{var}_status"].combine_first(df_final[var])
-    df_final.drop(columns=[f"{var}_status"], inplace=True)
+    salida_rows.append(out)
 
-# Calcular Tipo NPS
-df_final["Tipo NPS"] = df_final["SATISFACCION GENERAL"].apply(calcular_tipo_nps)
+df_out = pd.DataFrame(salida_rows, columns=OUTPUT_COLUMNS)
 
-# Agregar columna EMPRESA
-df_final["EMPRESA"] = "ALCALDIA FUNZA"
-
-# Exportar a Excel
-df_final.to_excel("Df Procesado Final.xlsx", index=False)
-print("Archivo 'Df Procesado Final.xlsx' generado exitosamente.")
+# Exportar
+df_out.to_excel(OUTPUT, index=False)
+print(
+    f"Archivo '{OUTPUT}' generado con {len(df_out)} filas y {len(df_out.columns)} columnas.")
