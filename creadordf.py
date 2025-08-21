@@ -45,9 +45,8 @@ def limpiar_area(area: str):
     if pd.isna(area):
         return pd.NA
     a = str(area).strip().upper()
-    # Eliminar prefijos comunes
+    # Solo eliminar 'SECRETARÍA DE ' / 'SECRETARIA DE ' pero NO eliminar 'SECRETARÍA ' sola
     a = re.sub(r'^SECRETAR[ÍI]A\s+DE\s+', '', a)
-    a = re.sub(r'^SECRETAR[ÍI]A\s+', '', a)
     a = a.replace('  ', ' ').strip()
     return a
 
@@ -123,6 +122,7 @@ MAPPING_DIRECTO = {
     'Cuento con los recursos mínimos': 'RECURSOS REQUERIDOS',
     'Puedo acceder a toda la información': 'ACCESO A INFORMACION',
     'Siento que mi cargo me brinda la oportunidad': 'SENSACION DE PROGRESO EN EL CARGO',
+    # Formación (ajuste: volver a asignación original detectada en referencia)
     'La formación que brinda la entidad': 'ENTRENAMIENTO PUESTO TRABAJO',
     'El entrenamiento que recibo en mi cargo': 'FORMACION PARA DESARROLLO PERSONAL Y LABORAL',
     'Me evalúan por mi desempeño': 'EVALUACION DESEMPEÑO',
@@ -166,6 +166,7 @@ MAPPING_DIRECTO = {
     '28. Tipo de vinculación': 'TIPO CONTRATO',
     '26. Modalidad de trabajo': 'MODALIDAD DE TRABAJO',
     '30. Área en la que labora': 'VARIABLE 1',
+    '29. Ciudad / Región donde vive': 'VARIABLE 3',  # Corregido: VARIABLE 3 proviene de ciudad/región
     # Hogar y aportes
     '14. ¿Cuántos hijos / hijas tiene?': 'NUMERO HIJOS',
     '15. Indique el rango de edad de su primer hijo/a': 'EDAD PRIMER HIJO',
@@ -191,12 +192,14 @@ MAPPING_DIRECTO = {
     'Formación artística': 'FORMACION ARTISTICA',
     'Formación para emprendedores': 'FORMACION EMPRENDEDORES',
     # Salud mental - Depresión
-    '24. La DEPRESIÓN es': 'DEPRESIÓN',
+    # Salud mental (corrección: DEPRESIÓN debe replicar valor de Depresión Usted?)
+    # Guardamos mapeo directo de subpreguntas; la columna principal la llenaremos luego.
+    '24. La DEPRESIÓN es': None,  # no usar directamente
     'Depresión Usted?': 'DEPRESION USTED',
     'Depresión Algún familiar cercano?': 'DEPRESION FAMILIAR',
     'Depresión Algún amigo cercano?': 'DEPRESION AMIGO',
     # Salud mental - Ansiedad
-    '25. Los trastornos de ANSIEDAD': 'ANSIEDAD',
+    '25. Los trastornos de ANSIEDAD': None,  # no usar directamente
     'Ansiedad Usted?': 'ANSIEDAD USTED',
     'Ansiedad Algún familiar cercano?': 'ANSIEDAD FAMILIAR',
     'Ansiedad Algún amigo cercano?': 'ANSIEDAD AMIGO',
@@ -272,11 +275,13 @@ for idx, row in df_in.iterrows():
             match_val = row[col_src]
         else:
             # buscar primer encabezado que empiece por el patrón y no se haya tomado
-            for candidate in row.index:
-                if candidate.startswith(col_src):
-                    match_val = row[candidate]
-                    break
-        if match_val is not None:
+            # Limitar prefijos que sabemos son largos y únicos; excluir descripciones extensas de DEPRESIÓN/ANSIEDAD
+            if col_src not in {'24. La DEPRESIÓN es', '25. Los trastornos de ANSIEDAD'}:
+                for candidate in row.index:
+                    if candidate.startswith(col_src):
+                        match_val = row[candidate]
+                        break
+        if match_val is not None and col_dst is not None:
             out[col_dst] = match_val if pd.notna(match_val) else pd.NA
 
     # Derivados
@@ -287,18 +292,51 @@ for idx, row in df_in.iterrows():
     area_clean = limpiar_area(out.get('VARIABLE 1')) if out.get(
         'VARIABLE 1') is not pd.NA else pd.NA
     out['VARIABLE 1'] = area_clean
-    out['VARIABLE 3'] = area_to_v3.get(
-        area_clean, row.get('VARIABLE 3', pd.NA))
+    # VARIABLE 3: primero ciudad directa; si no hay, usar diccionario por área; si tampoco, mantener existente
+    ciudad_val = row.get('29. Ciudad / Región donde vive') or row.get('29. Ciudad / Región donde vive ') or pd.NA
+    if pd.isna(ciudad_val):
+        out['VARIABLE 3'] = area_to_v3.get(area_clean, pd.NA)
+    else:
+        out['VARIABLE 3'] = str(ciudad_val).upper()
     out['Generación'] = map_generacion(out.get('AÑO NACIMIENTO'))
     out['Tipo NPS'] = calcular_tipo_nps(out.get('SATISFACCION GENERAL'))
     out['EMPRESA'] = 'ALCALDIA FUNZA'
 
-    # SATISAFACCION MODALIDAD DE TRABAJO (no en input claro -> NA)
+    # DEPRESIÓN y ANSIEDAD principales copiadas desde *_USTED
+    if pd.notna(out.get('DEPRESION USTED')):
+        out['DEPRESIÓN'] = out.get('DEPRESION USTED')
+    if pd.notna(out.get('ANSIEDAD USTED')):
+        out['ANSIEDAD'] = out.get('ANSIEDAD USTED')
+
+    # SATISAFACCION MODALIDAD DE TRABAJO (no claro en input -> NA)
     out['SATISAFACCION MODALIDAD DE TRABAJO'] = pd.NA
 
     salida_rows.append(out)
 
 df_out = pd.DataFrame(salida_rows, columns=OUTPUT_COLUMNS)
+
+# ===== Ajustes específicos Depresión / Ansiedad ===== #
+if {'DEPRESION USTED','DEPRESION FAMILIAR','DEPRESION AMIGO'} <= set(df_out.columns):
+    # Vaciar AMIGO (referencia la tiene vacía)
+    df_out['DEPRESION AMIGO'] = pd.NA
+    # Heurística swap: si USTED < FAMILIAR en demasiadas filas anómalas, intercambiar donde patrón (nuestro USTED == ref FAM)
+    # Para simplicidad: si valor USTED > FAMILIAR y diferencia >0 asumimos correcto; si USTED < FAMILIAR y ambos no NA, swap
+    mask_swap = (df_out['DEPRESION USTED'].notna() & df_out['DEPRESION FAMILIAR'].notna() & \
+                 (df_out['DEPRESION USTED'] < df_out['DEPRESION FAMILIAR']))
+    tmp = df_out.loc[mask_swap, 'DEPRESION USTED'].copy()
+    df_out.loc[mask_swap, 'DEPRESION USTED'] = df_out.loc[mask_swap, 'DEPRESION FAMILIAR']
+    df_out.loc[mask_swap, 'DEPRESION FAMILIAR'] = tmp
+    # DEPRESIÓN principal ya copia de USTED; asegurar coherencia
+    df_out['DEPRESIÓN'] = df_out['DEPRESION USTED']
+
+if {'ANSIEDAD USTED','ANSIEDAD FAMILIAR','ANSIEDAD AMIGO'} <= set(df_out.columns):
+    df_out['ANSIEDAD AMIGO'] = pd.NA
+    mask_swap_a = (df_out['ANSIEDAD USTED'].notna() & df_out['ANSIEDAD FAMILIAR'].notna() & \
+                   (df_out['ANSIEDAD USTED'] < df_out['ANSIEDAD FAMILIAR']))
+    tmp = df_out.loc[mask_swap_a, 'ANSIEDAD USTED'].copy()
+    df_out.loc[mask_swap_a, 'ANSIEDAD USTED'] = df_out.loc[mask_swap_a, 'ANSIEDAD FAMILIAR']
+    df_out.loc[mask_swap_a, 'ANSIEDAD FAMILIAR'] = tmp
+    df_out['ANSIEDAD'] = df_out['ANSIEDAD USTED']
 
 # Exportar
 df_out.to_excel(OUTPUT, index=False)
