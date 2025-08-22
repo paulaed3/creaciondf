@@ -15,25 +15,68 @@ def columnas_diferentes(cols_ref, cols_new):
 	orden_difiere = cols_ref != cols_new
 	return faltan, sobrantes, orden_difiere
 
-def comparar_celdas(df_ref: pd.DataFrame, df_new: pd.DataFrame):
-	# Asegurar mismo orden de columnas
-	df_new = df_new[df_ref.columns]
-	# Igualar tipos básicos a string donde mezclado para evitar falsos positivos
-	# (excepto números que comparamos directos)
-	dif_mask = (df_ref.ne(df_new)) & ~(df_ref.isna() & df_new.isna())
-	coords = dif_mask.stack()
-	if not coords.any():
-		return []
+def comparar_por_id(df_ref: pd.DataFrame, df_new: pd.DataFrame, id_col: str = 'ID'):
+	"""Compara celda a celda alineando por ID (maneja duplicados) o, si no existe, por posición.
+	Devuelve lista de dicts: ID, COLUMN, EXPECTED, ACTUAL."""
+	if id_col in df_ref.columns and id_col in df_new.columns:
+		ref_use = df_ref.copy()
+		new_use = df_new.copy()
+		# Manejo de duplicados
+		if ref_use[id_col].duplicated().any() or new_use[id_col].duplicated().any():
+			ref_use['__dup__'] = ref_use.groupby(id_col).cumcount()
+			new_use['__dup__'] = new_use.groupby(id_col).cumcount()
+			ref_use.set_index([id_col, '__dup__'], inplace=True)
+			new_use.set_index([id_col, '__dup__'], inplace=True)
+		else:
+			ref_use.set_index(id_col, inplace=True)
+			new_use.set_index(id_col, inplace=True)
+		index_name = id_col
+	else:
+		# Fallback posicional
+		ref_use = df_ref.copy()
+		new_use = df_new.copy()
+		ref_use['__POS__'] = range(len(ref_use))
+		new_use['__POS__'] = range(len(new_use))
+		ref_use.set_index('__POS__', inplace=True)
+		new_use.set_index('__POS__', inplace=True)
+		index_name = '__POS__'
+
+	# Unir índices para detectar filas faltantes/sobrantes
+	all_index = ref_use.index.union(new_use.index)
+	ref_al = ref_use.reindex(all_index)
+	new_al = new_use.reindex(all_index)
+
+	# Columnas comunes (mismo orden de referencia) excluyendo la columna de ID (se usará como índice)
+	common_cols = [c for c in df_ref.columns if c in df_new.columns and c != id_col]
+
 	difs = []
-	for (idx, col), is_diff in coords.items():
-		if is_diff:
+	for col in common_cols:
+		ref_col = ref_al[col]
+		new_col = new_al[col]
+		mask = (ref_col != new_col) & ~(ref_col.isna() & new_col.isna())
+		if not mask.any():
+			continue
+		for idx in ref_al.index[mask]:
+			# idx puede ser tupla (ID, dup) o simple
+			real_id = idx[0] if isinstance(idx, tuple) else idx
 			difs.append({
-				'row_index': idx,
-				'column': col,
-				'expected': df_ref.at[idx, col],
-				'actual': df_new.at[idx, col]
+				'ID': real_id,
+				'COLUMN': col,
+				'EXPECTED': ref_col.loc[idx],
+				'ACTUAL': new_col.loc[idx]
 			})
-	return difs
+
+	# Filas presentes sólo en uno de los dataframes
+	missing_in_new = ref_al.index.difference(new_al.dropna(how='all').index)
+	missing_in_ref = new_al.index.difference(ref_al.dropna(how='all').index)
+	for idx in missing_in_new:
+		real_id = idx[0] if isinstance(idx, tuple) else idx
+		difs.append({'ID': real_id, 'COLUMN': '__ROW__', 'EXPECTED': 'ROW_PRESENT_IN_REF', 'ACTUAL': 'MISSING_IN_NEW'})
+	for idx in missing_in_ref:
+		real_id = idx[0] if isinstance(idx, tuple) else idx
+		difs.append({'ID': real_id, 'COLUMN': '__ROW__', 'EXPECTED': 'MISSING_IN_REF', 'ACTUAL': 'ROW_PRESENT_IN_NEW'})
+
+	return difs, index_name
 
 def main():
 	parser = argparse.ArgumentParser(description="Compara output.xlsx generado con backup_data/output.xlsx referencia")
@@ -74,24 +117,15 @@ def main():
 		print("No se compara celda por celda porque difiere el conjunto de columnas")
 		return
 
-	# Alinear índices si 'ID' existe (para comparación semántica)
-	if 'ID' in df_ref.columns and 'ID' in df_new.columns:
-		# Verificar duplicados
-		if df_ref['ID'].is_unique and df_new['ID'].is_unique:
-			df_ref = df_ref.set_index('ID').sort_index()
-			df_new = df_new.set_index('ID').sort_index()
-			print("Comparación alineada por ID")
-		else:
-			print("Advertencia: IDs duplicados; se compara por posición original")
-
-	difs = comparar_celdas(df_ref, df_new)
-	total_celdas = df_ref.shape[0] * df_ref.shape[1]
+	# Comparación por ID / posición
+	difs, index_name = comparar_por_id(df_ref, df_new, id_col='ID')
+	total_celdas = df_ref.shape[0] * len(df_ref.columns)
 	if not difs:
 		print("Celdas: todas coinciden (sin diferencias)")
 	else:
 		print(f"Celdas diferentes: {len(difs)} de {total_celdas} ({len(difs)/total_celdas:.4%})")
 		for d in difs[:args.max_print]:
-			print(f"Fila/Index={d['row_index']} Col='{d['column']}' esperado='{d['expected']}' obtenido='{d['actual']}'")
+			print(f"{index_name}={d['ID']} Col='{d['COLUMN']}' esperado='{d['EXPECTED']}' obtenido='{d['ACTUAL']}'")
 		if len(difs) > args.max_print:
 			print(f"... ({len(difs)-args.max_print} diferencias más no impresas)")
 		# Exportar
