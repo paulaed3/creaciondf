@@ -302,11 +302,7 @@ for idx, row in df_in.iterrows():
     out['Tipo NPS'] = calcular_tipo_nps(out.get('SATISFACCION GENERAL'))
     out['EMPRESA'] = 'ALCALDIA FUNZA'
 
-    # DEPRESIÓN y ANSIEDAD principales copiadas desde *_USTED
-    if pd.notna(out.get('DEPRESION USTED')):
-        out['DEPRESIÓN'] = out.get('DEPRESION USTED')
-    if pd.notna(out.get('ANSIEDAD USTED')):
-        out['ANSIEDAD'] = out.get('ANSIEDAD USTED')
+    # (Se copiarán columnas principales luego en un paso global simple)
 
     # SATISAFACCION MODALIDAD DE TRABAJO (no claro en input -> NA)
     out['SATISAFACCION MODALIDAD DE TRABAJO'] = pd.NA
@@ -315,27 +311,10 @@ for idx, row in df_in.iterrows():
 
 df_out = pd.DataFrame(salida_rows, columns=OUTPUT_COLUMNS)
 
-# ===== Ajustes específicos Depresión / Ansiedad ===== #
-if {'DEPRESION USTED','DEPRESION FAMILIAR','DEPRESION AMIGO'} <= set(df_out.columns):
-    # Vaciar AMIGO (referencia la tiene vacía)
-    df_out['DEPRESION AMIGO'] = pd.NA
-    # Heurística swap: si USTED < FAMILIAR en demasiadas filas anómalas, intercambiar donde patrón (nuestro USTED == ref FAM)
-    # Para simplicidad: si valor USTED > FAMILIAR y diferencia >0 asumimos correcto; si USTED < FAMILIAR y ambos no NA, swap
-    mask_swap = (df_out['DEPRESION USTED'].notna() & df_out['DEPRESION FAMILIAR'].notna() & \
-                 (df_out['DEPRESION USTED'] < df_out['DEPRESION FAMILIAR']))
-    tmp = df_out.loc[mask_swap, 'DEPRESION USTED'].copy()
-    df_out.loc[mask_swap, 'DEPRESION USTED'] = df_out.loc[mask_swap, 'DEPRESION FAMILIAR']
-    df_out.loc[mask_swap, 'DEPRESION FAMILIAR'] = tmp
-    # DEPRESIÓN principal ya copia de USTED; asegurar coherencia
+# Copiar columnas principales directamente desde *_USTED sin cálculos ni swaps
+if 'DEPRESION USTED' in df_out.columns:
     df_out['DEPRESIÓN'] = df_out['DEPRESION USTED']
-
-if {'ANSIEDAD USTED','ANSIEDAD FAMILIAR','ANSIEDAD AMIGO'} <= set(df_out.columns):
-    df_out['ANSIEDAD AMIGO'] = pd.NA
-    mask_swap_a = (df_out['ANSIEDAD USTED'].notna() & df_out['ANSIEDAD FAMILIAR'].notna() & \
-                   (df_out['ANSIEDAD USTED'] < df_out['ANSIEDAD FAMILIAR']))
-    tmp = df_out.loc[mask_swap_a, 'ANSIEDAD USTED'].copy()
-    df_out.loc[mask_swap_a, 'ANSIEDAD USTED'] = df_out.loc[mask_swap_a, 'ANSIEDAD FAMILIAR']
-    df_out.loc[mask_swap_a, 'ANSIEDAD FAMILIAR'] = tmp
+if 'ANSIEDAD USTED' in df_out.columns:
     df_out['ANSIEDAD'] = df_out['ANSIEDAD USTED']
 
 # Exportar

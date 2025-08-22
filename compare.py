@@ -37,7 +37,7 @@ def comparar_celdas(df_ref: pd.DataFrame, df_new: pd.DataFrame):
 
 def main():
 	parser = argparse.ArgumentParser(description="Compara output.xlsx generado con backup_data/output.xlsx referencia")
-	parser.add_argument('--ref', default='backup_data/output.xlsx', help='Archivo de referencia (expected)')
+	parser.add_argument('--ref', default='backup_data/output_expect.xlsx', help='Archivo de referencia (expected)')
 	parser.add_argument('--new', default='output.xlsx', help='Archivo generado (actual)')
 	parser.add_argument('--export-diff', default='diff_cells.xlsx', help='Archivo Excel donde exportar celdas diferentes')
 	parser.add_argument('--max-print', type=int, default=50, help='Máximo de diferencias a imprimir en consola')
