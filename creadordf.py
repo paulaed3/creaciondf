@@ -4,56 +4,47 @@ from pathlib import Path
 
 # ================= Utilidades ================= #
 
-
 def normalizar_id(id_str):
     if pd.isna(id_str):
         return pd.NA
     solo = re.sub(r'\D', '', str(id_str))
     return solo if solo else pd.NA
 
-
 def calcular_tipo_nps(valor):
     try:
         v = int(valor)
     except (ValueError, TypeError):
         return pd.NA
-    if v >= 9:
-        return "Entusiastas"
-    if v >= 7:
-        return "Pasivos"
-    if v >= 0:
-        return "Detractores"
+    if v >= 9: return "Entusiastas"
+    if v >= 7: return "Pasivos"
+    if v >= 0: return "Detractores"
     return pd.NA
 
-
+# versión robusta basada en año numérico (recomendado)
 def map_generacion(anio_str: str):
     if pd.isna(anio_str):
         return pd.NA
-    txt = str(anio_str).lower()
-    if '1965' in txt or '1981' in txt or '196' in txt and '198' in txt:
-        return 'Generación X'
-    if '1982' in txt or '1994' in txt or '198' in txt and '199' in txt:
-        return 'Millenials'
-    if '1995' in txt or 'después' in txt or 'despues' in txt or '199' in txt and '200' in txt:
-        return 'Centenialls'
-    if '195' in txt or 'antes' in txt:
-        return 'Baby Boomers'
+    s = str(anio_str)
+    m = re.search(r'\d{4}', s)
+    if not m:
+        return pd.NA
+    y = int(m.group())
+    if 1946 <= y <= 1964: return 'Baby Boomers'
+    if 1965 <= y <= 1980: return 'Generación X'
+    if 1981 <= y <= 1996: return 'Millennials'
+    if 1997 <= y <= 2012: return 'Centennials'
     return pd.NA
-
 
 def limpiar_area(area: str):
     if pd.isna(area):
         return pd.NA
     a = str(area).strip().upper()
-    # Solo eliminar 'SECRETARÍA DE ' / 'SECRETARIA DE ' pero NO eliminar 'SECRETARÍA ' sola
     a = re.sub(r'^SECRETAR[ÍI]A\s+DE\s+', '', a)
     a = a.replace('  ', ' ').strip()
     return a
 
-
 def safe_get(row, col):
     return row.get(col) if col in row and pd.notna(row.get(col)) else pd.NA
-
 
 # ================= Definición columnas destino ================= #
 OUTPUT_COLUMNS = [
@@ -94,7 +85,7 @@ OUTPUT_COLUMNS = [
     'TIEMPO PANTALLAS', 'HABITIOS', 'ALIMENTACION', 'CONSUMO SUSTANCIAS', 'NIVEL PRECOUPACION', 'PREOCUPACION SALUD FISICA',
     'PREOCUPACION SALUD MENTAL', 'PREOCUPACION SALUD FISICA FAMILIARES', 'PREOCUPACION SALUD MENTAL FAMILIARES',
     'PREOCUPACION SUSTENTO', 'PREOCUPACION FUTURO', 'DEPRESIÓN', 'DEPRESION USTED', 'DEPRESION FAMILIAR', 'DEPRESION AMIGO',
-    'ANSIEDAD', 'ANSIEDAD USTED', 'ANSIEDAD FAMILIAR', 'ANSIEDAD AMIGO', 'VARIABLE 3', 'SATISAFACCION MODALIDAD DE TRABAJO',
+    'ANSIEDAD', 'ANSIEDAD USTED', 'ANSIEDAD FAMILIAR', 'ANSIEDAD AMIGO', 'VARIABLE 3', 'SATISFACCIÓN MODALIDAD DE TRABAJO',
     'Generación', 'Tipo NPS', 'EMPRESA'
 ]
 
@@ -104,8 +95,7 @@ MAPPING_DIRECTO = {
     'IDs / TAN del participante': 'ID',
     'Fecha y hora': 'FECHA',
     'Estado de la participación': 'ESTATUS',
-    # Satisfacción
-    # usaremos búsqueda por prefijo
+    # Satisfacción (prefijos posibles)
     '1. En una escala de 1 a 10': 'SATISFACCION GENERAL',
     '2. En una escala de 1 a 10': 'SATISFACCION CONDICIONES',
     '3. ¿Quiere hacer algún comentario': 'COMENTARIOS',
@@ -122,7 +112,6 @@ MAPPING_DIRECTO = {
     'Cuento con los recursos mínimos': 'RECURSOS REQUERIDOS',
     'Puedo acceder a toda la información': 'ACCESO A INFORMACION',
     'Siento que mi cargo me brinda la oportunidad': 'SENSACION DE PROGRESO EN EL CARGO',
-    # Formación (ajuste: volver a asignación original detectada en referencia)
     'La formación que brinda la entidad': 'ENTRENAMIENTO PUESTO TRABAJO',
     'El entrenamiento que recibo en mi cargo': 'FORMACION PARA DESARROLLO PERSONAL Y LABORAL',
     'Me evalúan por mi desempeño': 'EVALUACION DESEMPEÑO',
@@ -165,8 +154,8 @@ MAPPING_DIRECTO = {
     '27. Antigüedad en la entidad': 'ANTIGÜEDAD',
     '28. Tipo de vinculación': 'TIPO CONTRATO',
     '26. Modalidad de trabajo': 'MODALIDAD DE TRABAJO',
-    '30. Área en la que labora': 'VARIABLE 1',
-    '29. Ciudad / Región donde vive': 'VARIABLE 3',  # Corregido: VARIABLE 3 proviene de ciudad/región
+    '30. Área en la que labora': 'VARIABLE 1',   # <- será sobrescrita por maestro
+    '29. Ciudad / Región donde vive': 'VARIABLE 3',  # <- será sobrescrita por maestro
     # Hogar y aportes
     '14. ¿Cuántos hijos / hijas tiene?': 'NUMERO HIJOS',
     '15. Indique el rango de edad de su primer hijo/a': 'EDAD PRIMER HIJO',
@@ -191,19 +180,16 @@ MAPPING_DIRECTO = {
     'Desarrollo personal': 'FORMACION DESARROLLO PERSONAL',
     'Formación artística': 'FORMACION ARTISTICA',
     'Formación para emprendedores': 'FORMACION EMPRENDEDORES',
-    # Salud mental - Depresión
-    # Salud mental (corrección: DEPRESIÓN debe replicar valor de Depresión Usted?)
-    # Guardamos mapeo directo de subpreguntas; la columna principal la llenaremos luego.
-    '24. La DEPRESIÓN es': None,  # no usar directamente
-    'Depresión Usted?': 'DEPRESION USTED',
-    'Depresión Algún familiar cercano?': 'DEPRESION FAMILIAR',
-    'Depresión Algún amigo cercano?': 'DEPRESION AMIGO',
-    # Salud mental - Ansiedad
-    '25. Los trastornos de ANSIEDAD': None,  # no usar directamente
-    'Ansiedad Usted?': 'ANSIEDAD USTED',
-    'Ansiedad Algún familiar cercano?': 'ANSIEDAD FAMILIAR',
-    'Ansiedad Algún amigo cercano?': 'ANSIEDAD AMIGO',
-    # Colsubsidio
+    # Salud mental
+    '24. La DEPRESIÓN es': 'DEPRESION USTED',
+    'Depresión Usted?': 'DEPRESION FAMILIAR',
+    'Depresión Algún familiar cercano?': 'DEPRESION AMIGO', 
+    'Depresión Algún amigo cercano?': None,
+    '25. Los trastornos de ANSIEDAD': 'ANSIEDAD USTED',
+    'Ansiedad Usted?': 'ANSIEDAD FAMILIAR',
+    'Ansiedad Algún familiar cercano?': 'ANSIEDAD AMIGO',
+    'Ansiedad Algún amigo cercano?': None,
+    # Colsubsidio / compras / crédito (igual que antes)...
     '31. ¿Es afiliado a Colsubsidio?': 'AFILIADO COLSUBSIDIO',
     '32. ¿Cuenta usted la Tarjeta Multiservicios': 'TMS',
     '33. Como afiliado a Colsubsidio': 'SERVICIOS CAJA',
@@ -227,7 +213,6 @@ MAPPING_DIRECTO = {
     'Chequeos médicos': 'CHEQUEOS MÉDICOS',
     'Plan complementario de salud': 'PLAN COMPLEMENTARIO',
     'Cirugía estética': 'CIRUGÍA ESTÉTICA',
-    # Compras / crédito
     '34. ¿Hace compras en algunos de estos establecimientos?:': 'COMPRA EN',
     'Supermercados Colsubsidio': 'COMPRA EN SUPERMECADOS',
     'Droguerías Colsubsidio': 'COMPRA DROGUERÍAS',
@@ -248,76 +233,84 @@ if not Path(INPUT2).exists():
 df_in = pd.read_excel(INPUT1)
 df_map = pd.read_excel(INPUT2)
 
-# Filtrar participación completa
-df_in = df_in[df_in.get('Estado de la participación') ==
-              'Participación completa'].copy()
+df_in = df_in[df_in.get('Estado de la participación') == 'Participación completa'].copy()
 
-# Normalizar ID
-df_in['ID'] = df_in.get('IDs / TAN del participante').apply(normalizar_id)
 
-# Construir diccionario area -> variable3 (solo filas donde VARIABLE 3 no es nan)
-area_to_v3 = {}
-for _, r in df_map.iterrows():
-    area_raw = str(r.get('Unnamed: 1', '')).strip()
-    v3 = str(r.get('VARIABLE 3', '')).strip()
-    if area_raw and area_raw.upper() != 'VARIABLE 1' and v3 and v3.lower() != 'nan':
-        area_to_v3[limpiar_area(area_raw)] = v3.upper()
+col_cedula = next(
+    (c for c in df_map.columns
+     if str(c).strip().lower().replace('é','e') == 'cedula'),
+    None
+)
+if col_cedula is None:
+    raise KeyError("INPUT2 no tiene la columna 'CEDULA' (o variante).")
 
-# Preprocesar: crear columnas destino base
+df_map = df_map.rename(columns={col_cedula: 'ID'})
+df_map['ID'] = df_map['ID'].apply(normalizar_id)
+
+df_map['ID'] = df_map['ID'].apply(normalizar_id)
+
+cols_maestro = ['ID', 'VARIABLE 1', 'VARIABLE 2', 'VARIABLE 3', 'EMPRESA']
+cols_maestro = [c for c in cols_maestro if c in df_map.columns]
+df_map_sel = df_map[cols_maestro].copy()
+
+if 'VARIABLE 1' in df_map_sel.columns:
+    df_map_sel['VARIABLE 1'] = df_map_sel['VARIABLE 1'].apply(limpiar_area)
+
+df_in = df_in.merge(df_map_sel, on='ID', how='left', suffixes=('', '_MAP'))
+
+
+sin_match = df_in['ID'].isna() | df_in[['VARIABLE 1','VARIABLE 2','VARIABLE 3']].isna().all(axis=1) if set(['VARIABLE 1','VARIABLE 2','VARIABLE 3']).issubset(df_in.columns) else df_in['ID'].isna()
+faltantes = df_in.loc[sin_match, 'ID'].dropna().unique().tolist()
+if faltantes:
+    print(f"[AVISO] {len(faltantes)} ID(s) no encontraron match en INPUT2 (maestro) para VARIABLES 1/2/3.")
+
 salida_rows = []
 for idx, row in df_in.iterrows():
     out = {col: pd.NA for col in OUTPUT_COLUMNS}
     out['Unnamed: 0'] = str(len(salida_rows))
+
     for col_src, col_dst in MAPPING_DIRECTO.items():
-        # búsqueda flexible por prefijo para preguntas largas
         match_val = None
         if col_src in row.index:
             match_val = row[col_src]
         else:
-            # buscar primer encabezado que empiece por el patrón y no se haya tomado
-            # Limitar prefijos que sabemos son largos y únicos; excluir descripciones extensas de DEPRESIÓN/ANSIEDAD
             if col_src not in {'24. La DEPRESIÓN es', '25. Los trastornos de ANSIEDAD'}:
                 for candidate in row.index:
-                    if candidate.startswith(col_src):
+                    if str(candidate).startswith(col_src):
                         match_val = row[candidate]
                         break
         if match_val is not None and col_dst is not None:
             out[col_dst] = match_val if pd.notna(match_val) else pd.NA
 
-    # Derivados
-    out['SATISFACCION COVID'] = pd.NA  # No presente en input
-    out['RESULTADO SATISFACCION'] = pd.NA  # Placeholder (regla no definida)
-    out['VARIABLE 2'] = str(out.get('TIPO CONTRATO')
-                            or '').strip().upper() or pd.NA
-    area_clean = limpiar_area(out.get('VARIABLE 1')) if out.get(
-        'VARIABLE 1') is not pd.NA else pd.NA
-    out['VARIABLE 1'] = area_clean
-    # VARIABLE 3: primero ciudad directa; si no hay, usar diccionario por área; si tampoco, mantener existente
-    ciudad_val = row.get('29. Ciudad / Región donde vive') or row.get('29. Ciudad / Región donde vive ') or pd.NA
-    if pd.isna(ciudad_val):
-        out['VARIABLE 3'] = area_to_v3.get(area_clean, pd.NA)
-    else:
-        out['VARIABLE 3'] = str(ciudad_val).upper()
+    out['SATISFACCION COVID'] = pd.NA
+    out['RESULTADO SATISFACCION'] = pd.NA
+
+
+    if 'VARIABLE 1' in df_in.columns:
+        out['VARIABLE 1'] = row.get('VARIABLE 1')
+    if 'VARIABLE 2' in df_in.columns:
+        out['VARIABLE 2'] = row.get('VARIABLE 2')
+    if 'VARIABLE 3' in df_in.columns:
+        out['VARIABLE 3'] = row.get('VARIABLE 3')
+
     out['Generación'] = map_generacion(out.get('AÑO NACIMIENTO'))
     out['Tipo NPS'] = calcular_tipo_nps(out.get('SATISFACCION GENERAL'))
-    out['EMPRESA'] = 'ALCALDIA FUNZA'
 
-    # (Se copiarán columnas principales luego en un paso global simple)
+    if 'EMPRESA' in df_in.columns and pd.notna(row.get('EMPRESA')):
+        out['EMPRESA'] = row.get('EMPRESA')
+    else:
+        out['EMPRESA'] = 'ALCALDIA FUNZA'  
 
-    # SATISAFACCION MODALIDAD DE TRABAJO (no claro en input -> NA)
-    out['SATISAFACCION MODALIDAD DE TRABAJO'] = pd.NA
+    out['SATISFACCIÓN MODALIDAD DE TRABAJO'] = pd.NA
 
     salida_rows.append(out)
 
 df_out = pd.DataFrame(salida_rows, columns=OUTPUT_COLUMNS)
 
-# Copiar columnas principales directamente desde *_USTED sin cálculos ni swaps
 if 'DEPRESION USTED' in df_out.columns:
     df_out['DEPRESIÓN'] = df_out['DEPRESION USTED']
 if 'ANSIEDAD USTED' in df_out.columns:
     df_out['ANSIEDAD'] = df_out['ANSIEDAD USTED']
 
-# Exportar
 df_out.to_excel(OUTPUT, index=False)
-print(
-    f"Archivo '{OUTPUT}' generado con {len(df_out)} filas y {len(df_out.columns)} columnas.")
+print(f"Archivo '{OUTPUT}' generado con {len(df_out)} filas y {len(df_out.columns)} columnas.")
